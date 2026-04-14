@@ -160,61 +160,61 @@ export const BANNER_LAYOUT_PRESETS: BannerLayoutPreset[] = [
     id: "hero-right",
     name: "히어로 · 우측 대형",
     description: "우측에 제품을 크게, 좌측은 메인 헤드라인 공간",
-    imageZone: { x: 0.46, y: 0.08, w: 0.5, h: 0.84 },
+    imageZone: { x: 0.42, y: 0.02, w: 0.58, h: 0.98 },
     gradientStart: { x: 0, y: 0 },
     gradientEnd: { x: 1, y: 1 },
-    shadowOffset: { x: -14, y: 10 },
-    zoneFillRatio: 0.96
+    shadowOffset: { x: -18, y: 14 },
+    zoneFillRatio: 1.05
   },
   {
     id: "benefit-left",
     name: "베네핏 · 좌측 중형",
     description: "좌측 제품 + 우측 3~4개 베네핏 리스트 공간",
-    imageZone: { x: 0.06, y: 0.12, w: 0.4, h: 0.76 },
+    imageZone: { x: 0, y: 0.02, w: 0.5, h: 0.96 },
     gradientStart: { x: 1, y: 0 },
     gradientEnd: { x: 0, y: 1 },
-    shadowOffset: { x: 14, y: 10 },
-    zoneFillRatio: 0.95
+    shadowOffset: { x: 18, y: 14 },
+    zoneFillRatio: 1.05
   },
   {
     id: "trust-center-bottom",
     name: "근거 · 중앙 하단",
     description: "상단 대형 헤드라인 + 하단 중앙 소형 제품",
-    imageZone: { x: 0.32, y: 0.4, w: 0.36, h: 0.55 },
+    imageZone: { x: 0.28, y: 0.22, w: 0.44, h: 0.78 },
     gradientStart: { x: 0.5, y: 0 },
     gradientEnd: { x: 0.5, y: 1 },
-    shadowOffset: { x: 0, y: -14 },
-    zoneFillRatio: 0.9
+    shadowOffset: { x: 0, y: -18 },
+    zoneFillRatio: 1.02
   },
   {
     id: "compare-middle",
     name: "비교 · 중앙 배치",
     description: "중앙 제품 + 좌우 대칭 설명 공간",
-    imageZone: { x: 0.35, y: 0.14, w: 0.3, h: 0.72 },
+    imageZone: { x: 0.3, y: 0.02, w: 0.4, h: 0.96 },
     gradientStart: { x: 0, y: 0.5 },
     gradientEnd: { x: 1, y: 0.5 },
-    shadowOffset: { x: 0, y: 14 },
-    zoneFillRatio: 0.94
+    shadowOffset: { x: 0, y: 18 },
+    zoneFillRatio: 1.0
   },
   {
     id: "cta-left-bold",
     name: "CTA · 좌측 크게",
     description: "좌측 대형 제품 + 우측 CTA 버튼 공간",
-    imageZone: { x: 0.02, y: 0.06, w: 0.5, h: 0.88 },
+    imageZone: { x: 0, y: 0, w: 0.55, h: 1 },
     gradientStart: { x: 1, y: 0 },
     gradientEnd: { x: 0, y: 1 },
-    shadowOffset: { x: 18, y: 12 },
-    zoneFillRatio: 0.97
+    shadowOffset: { x: 22, y: 14 },
+    zoneFillRatio: 1.08
   },
   {
     id: "detail-center",
     name: "상세 · 중앙 포커스",
     description: "중앙 제품 + 상하단 디테일 설명",
-    imageZone: { x: 0.28, y: 0.08, w: 0.44, h: 0.7 },
+    imageZone: { x: 0.22, y: 0.02, w: 0.56, h: 0.96 },
     gradientStart: { x: 0.5, y: 0 },
     gradientEnd: { x: 0.5, y: 1 },
     shadowOffset: { x: 0, y: 18 },
-    zoneFillRatio: 0.95
+    zoneFillRatio: 1.03
   }
 ];
 
@@ -538,6 +538,78 @@ export async function removeSolidBackground(
   const pngDataUrl = canvas.toDataURL("image/png");
   const base64 = pngDataUrl.split(",")[1] ?? "";
   if (!base64) throw new Error("배경 제거 결과 인코딩 실패");
+  return { base64, mimeType: "image/png" };
+}
+
+// @MX:NOTE: 투명 배경 PNG의 투명 패딩을 제거하여 제품 영역(알파 > 임계값)의
+// 바운딩 박스로 크롭. 배경 제거 후 이 함수를 거치면 composeOriginalBanner가
+// 프레임 전체가 아닌 제품 자체 크기로 스케일링하므로 제품이 훨씬 크게 보인다.
+export async function cropToContentBounds(
+  sourceBase64: string,
+  mimeType: string,
+  alphaThreshold: number = 12
+): Promise<{ base64: string; mimeType: "image/png" }> {
+  const dataUrl = toDataUrl(mimeType, sourceBase64);
+  const image = await loadImage(dataUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("크롭 캔버스 초기화 실패");
+
+  ctx.drawImage(image, 0, 0);
+  const { data } = ctx.getImageData(0, 0, width, height);
+
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let found = false;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        found = true;
+      }
+    }
+  }
+
+  if (!found) {
+    return { base64: sourceBase64, mimeType: "image/png" };
+  }
+
+  const contentW = maxX - minX + 1;
+  const contentH = maxY - minY + 1;
+  // 약간의 여백(4%)으로 숨 쉴 공간 확보
+  const padding = Math.round(Math.max(contentW, contentH) * 0.04);
+  const cropX = Math.max(0, minX - padding);
+  const cropY = Math.max(0, minY - padding);
+  const cropW = Math.min(width - cropX, contentW + padding * 2);
+  const cropH = Math.min(height - cropY, contentH + padding * 2);
+
+  // 이미 프레임 전체가 컨텐츠라면 원본 그대로 반환
+  if (cropW >= width * 0.96 && cropH >= height * 0.96) {
+    return { base64: sourceBase64, mimeType: "image/png" };
+  }
+
+  const cropCanvas = document.createElement("canvas");
+  cropCanvas.width = cropW;
+  cropCanvas.height = cropH;
+  const cropCtx = cropCanvas.getContext("2d");
+  if (!cropCtx) throw new Error("크롭 결과 캔버스 초기화 실패");
+  cropCtx.drawImage(image, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  const pngDataUrl = cropCanvas.toDataURL("image/png");
+  const base64 = pngDataUrl.split(",")[1] ?? "";
+  if (!base64) throw new Error("크롭 결과 인코딩 실패");
   return { base64, mimeType: "image/png" };
 }
 

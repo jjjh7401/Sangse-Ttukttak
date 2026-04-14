@@ -20,6 +20,7 @@ import {
   TONE_OPTIONS,
   apiJson,
   composeOriginalBanner,
+  cropToContentBounds,
   detectSimpleBackground,
   pickBannerLayoutForSection,
   prepareImageFile,
@@ -438,6 +439,14 @@ export function PdpMakerClient() {
               const removed = await removeSolidBackground(srcBase64, srcMime);
               srcBase64 = removed.base64;
               srcMime = removed.mimeType;
+              // 배경 제거 직후 투명 패딩 제거 → 제품이 프레임을 꽉 채우도록
+              try {
+                const cropped = await cropToContentBounds(srcBase64, srcMime);
+                srcBase64 = cropped.base64;
+                srcMime = cropped.mimeType;
+              } catch (cropError) {
+                console.error("컨텐츠 바운딩 크롭 실패, 패딩 포함 이미지 사용", cropError);
+              }
             } catch (removeError) {
               console.error("배경 제거 실패, 원본 이미지로 진행합니다.", removeError);
             }
