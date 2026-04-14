@@ -20,7 +20,9 @@ import {
   TONE_OPTIONS,
   apiJson,
   composeOriginalBanner,
+  detectSimpleBackground,
   prepareImageFile,
+  removeSolidBackground,
   validateGeminiApiKey
 } from "./pdp-utils";
 
@@ -33,6 +35,8 @@ export function PdpMakerClient() {
   const [modelImageUsage, setModelImageUsage] = useState<ReferenceModelUsage | null>(null);
   const [result, setResult] = useState<GeneratedResult | null>(null);
   const [useOriginalAsIs, setUseOriginalAsIs] = useState(false);
+  const [removeBackground, setRemoveBackground] = useState(false);
+  const [hasSimpleBackground, setHasSimpleBackground] = useState(false);
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [desiredTone, setDesiredTone] = useState("");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
@@ -108,6 +112,21 @@ export function PdpMakerClient() {
       setErrorDetail("");
       setShowErrorDetail(false);
       setNotice(`${file.name} 이미지를 준비했습니다. 설정을 확인한 뒤 AI 분석을 시작해 보세요.`);
+
+      // 업로드 직후 코너 샘플링으로 배경 단순성 자동 판정
+      try {
+        const { isSimple } = await detectSimpleBackground(
+          nextImage.base64,
+          nextImage.mimeType
+        );
+        setHasSimpleBackground(isSimple);
+        if (!isSimple) {
+          setRemoveBackground(false);
+        }
+      } catch {
+        setHasSimpleBackground(false);
+        setRemoveBackground(false);
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "이미지를 준비하지 못했습니다.");
       setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
@@ -404,11 +423,26 @@ export function PdpMakerClient() {
       // 원본 이미지 사용 모드: 카피는 Gemini가 생성한 그대로 유지하되
       // 섹션 이미지는 원본을 선택 비율에 맞춰 합성한 배너로 일괄 덮어쓴다.
       if (useOriginalAsIs) {
-        setLoadingStep("원본 이미지를 선택한 비율에 맞춰 배너로 합성하는 중입니다.");
+        setLoadingStep(
+          removeBackground
+            ? "원본 이미지의 단색 배경을 제거하고 배너에 합성하는 중입니다."
+            : "원본 이미지를 선택한 비율에 맞춰 배너로 합성하는 중입니다."
+        );
         try {
+          let srcBase64 = preparedImage.base64;
+          let srcMime: string = preparedImage.mimeType;
+          if (removeBackground) {
+            try {
+              const removed = await removeSolidBackground(srcBase64, srcMime);
+              srcBase64 = removed.base64;
+              srcMime = removed.mimeType;
+            } catch (removeError) {
+              console.error("배경 제거 실패, 원본 이미지로 진행합니다.", removeError);
+            }
+          }
           const composedBanner = await composeOriginalBanner(
-            preparedImage.base64,
-            preparedImage.mimeType,
+            srcBase64,
+            srcMime,
             aspectRatio
           );
           finalResult = {
@@ -444,7 +478,9 @@ export function PdpMakerClient() {
       setEditorSessionKey((current) => current + 1);
       setNotice(
         useOriginalAsIs
-          ? "원본 이미지로 배너를 합성했습니다. AI가 제안한 카피를 참고해 여백에 텍스트를 배치해 주세요."
+          ? removeBackground
+            ? "원본 이미지의 배경을 제거하고 배너에 자연스럽게 합성했습니다. AI가 제안한 카피를 참고해 여백에 텍스트를 배치해 주세요."
+            : "원본 이미지로 배너를 합성했습니다. AI가 제안한 카피를 참고해 여백에 텍스트를 배치해 주세요."
           : "분석이 완료되었습니다. 섹션별 이미지를 재생성하거나 텍스트를 직접 배치해 보세요."
       );
       setAppState("editor");
@@ -624,6 +660,26 @@ export function PdpMakerClient() {
                   <small>체크 시 이미지는 AI로 재생성하지 않고 원본을 사용합니다. 카피 문구는 AI가 생성 설정(톤·추가 정보)을 반영해 제안하며, 선택한 비율에 맞춰 배경 여백을 자동 합성해 텍스트를 배치할 공간을 확보합니다.</small>
                 </span>
               </label>
+
+              {useOriginalAsIs && preparedImage && hasSimpleBackground ? (
+                <label className={styles.subToggle}>
+                  <input
+                    type="checkbox"
+                    checked={removeBackground}
+                    onChange={(event) => setRemoveBackground(event.target.checked)}
+                  />
+                  <span className={styles.originalToggleCopy}>
+                    <strong>배경 제거 (단색·심플 배경 감지됨)</strong>
+                    <small>업로드한 이미지의 단색 배경을 투명하게 처리한 뒤 배너 배경 그라디언트와 자연스럽게 합성합니다. 흰색·회색·단색 배경 제품컷에 적합합니다.</small>
+                  </span>
+                </label>
+              ) : null}
+
+              {useOriginalAsIs && preparedImage && !hasSimpleBackground ? (
+                <div className={styles.subToggleHint}>
+                  복잡한 배경이 감지되어 배경 제거 옵션을 제공하지 않습니다. 단색 배경의 제품컷을 업로드하면 자동으로 활성화됩니다.
+                </div>
+              ) : null}
 
               <div className={styles.panelIntro}>
                 <div className={styles.sectionHeading}>

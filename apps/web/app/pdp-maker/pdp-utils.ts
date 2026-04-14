@@ -271,3 +271,154 @@ function lightenHex(hex: string, amount: number): string {
   const nb = b + (255 - b) * amount;
   return rgbToHex(nr, ng, nb);
 }
+
+// @MX:NOTE: 4개 코너를 샘플링하여 배경이 단색에 가까운지 자동 판정.
+// 코너 4곳의 평균 색상을 구한 뒤 쌍별 최대 RGB 거리로 "단순함"을 평가한다.
+// maxDist < 40 이면 단색/심플 배경으로 간주해 배경 제거 UI를 노출할 수 있다.
+export async function detectSimpleBackground(
+  sourceBase64: string,
+  mimeType: string
+): Promise<{ isSimple: boolean; maxDistance: number }> {
+  try {
+    const dataUrl = toDataUrl(mimeType, sourceBase64);
+    const image = await loadImage(dataUrl);
+    const size = 160;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { isSimple: false, maxDistance: Infinity };
+    ctx.drawImage(image, 0, 0, size, size);
+    const { data } = ctx.getImageData(0, 0, size, size);
+
+    const patch = 14;
+    const regions: Array<[number, number]> = [
+      [0, 0],
+      [size - patch, 0],
+      [0, size - patch],
+      [size - patch, size - patch]
+    ];
+    const cornerColors = regions.map(([x0, y0]) =>
+      sampleAverageColor(data, size, x0, y0, patch, patch)
+    );
+
+    let maxDist = 0;
+    for (let i = 0; i < cornerColors.length; i++) {
+      for (let j = i + 1; j < cornerColors.length; j++) {
+        const d = colorDistance(cornerColors[i], cornerColors[j]);
+        if (d > maxDist) maxDist = d;
+      }
+    }
+
+    return { isSimple: maxDist < 40, maxDistance: maxDist };
+  } catch {
+    return { isSimple: false, maxDistance: Infinity };
+  }
+}
+
+// @MX:NOTE: 단색/심플 배경 제거 — 코너 평균 색상을 배경으로 가정하고
+// color key + soft edge 방식으로 알파 채널을 계산한다. 외부 ML 모델 없이
+// 브라우저 Canvas API만으로 동작.
+// - tolerance 내: 완전 투명 (배경 확정)
+// - tolerance ~ tolerance*1.6: 경계 영역, 거리에 비례한 부분 투명 (soft edge)
+// - 그 밖: 원본 유지 (제품)
+export async function removeSolidBackground(
+  sourceBase64: string,
+  mimeType: string,
+  tolerance: number = 32
+): Promise<{ base64: string; mimeType: "image/png" }> {
+  const dataUrl = toDataUrl(mimeType, sourceBase64);
+  const image = await loadImage(dataUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("배경 제거 캔버스 초기화 실패");
+
+  ctx.drawImage(image, 0, 0);
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+
+  // 배경 색상: 4개 코너 평균 (이미지 본 좌표)
+  const patch = Math.max(10, Math.floor(Math.min(width, height) * 0.05));
+  const cornerRegions: Array<[number, number]> = [
+    [0, 0],
+    [width - patch, 0],
+    [0, height - patch],
+    [width - patch, height - patch]
+  ];
+  const cornerColors = cornerRegions.map(([x0, y0]) =>
+    sampleAverageColor(data, width, x0, y0, patch, patch)
+  );
+  const bg = averageColors(cornerColors);
+
+  const softBand = tolerance * 0.6;
+  for (let i = 0; i < data.length; i += 4) {
+    const dist = colorDistance(
+      { r: data[i], g: data[i + 1], b: data[i + 2] },
+      bg
+    );
+    if (dist < tolerance) {
+      data[i + 3] = 0;
+    } else if (dist < tolerance + softBand) {
+      const ratio = (dist - tolerance) / softBand;
+      data[i + 3] = Math.round(data[i + 3] * ratio);
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  const pngDataUrl = canvas.toDataURL("image/png");
+  const base64 = pngDataUrl.split(",")[1] ?? "";
+  if (!base64) throw new Error("배경 제거 결과 인코딩 실패");
+  return { base64, mimeType: "image/png" };
+}
+
+type RGB = { r: number; g: number; b: number };
+
+function sampleAverageColor(
+  data: Uint8ClampedArray,
+  stride: number,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number
+): RGB {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (let y = y0; y < y0 + height; y++) {
+    for (let x = x0; x < x0 + width; x++) {
+      const idx = (y * stride + x) * 4;
+      r += data[idx];
+      g += data[idx + 1];
+      b += data[idx + 2];
+      count++;
+    }
+  }
+  if (count === 0) return { r: 255, g: 255, b: 255 };
+  return { r: r / count, g: g / count, b: b / count };
+}
+
+function averageColors(colors: RGB[]): RGB {
+  if (colors.length === 0) return { r: 255, g: 255, b: 255 };
+  const sum = colors.reduce(
+    (acc, c) => ({ r: acc.r + c.r, g: acc.g + c.g, b: acc.b + c.b }),
+    { r: 0, g: 0, b: 0 }
+  );
+  return {
+    r: sum.r / colors.length,
+    g: sum.g / colors.length,
+    b: sum.b / colors.length
+  };
+}
+
+function colorDistance(a: RGB, b: RGB): number {
+  const dr = a.r - b.r;
+  const dg = a.g - b.g;
+  const db = a.b - b.b;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
