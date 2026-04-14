@@ -292,6 +292,54 @@
   padding: 26px;
 }
 
+.originalToggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+  border-radius: 16px;
+  background: rgba(20, 115, 108, 0.06);
+  border: 1px solid rgba(20, 115, 108, 0.18);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.originalToggle:hover {
+  background: rgba(20, 115, 108, 0.1);
+  border-color: rgba(20, 115, 108, 0.28);
+}
+
+.originalToggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: var(--teal, #14736C);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.originalToggleCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  user-select: none;
+}
+
+.originalToggleCopy strong {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.originalToggleCopy small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: #5e5146;
+}
+
 .controlRail,
 .sectionRail,
 .inspectorRail {

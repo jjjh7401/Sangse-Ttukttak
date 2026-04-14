@@ -25,6 +25,7 @@ export function PdpMakerClient() {
   const [modelImage, setModelImage] = useState<PreparedImage | null>(null);
   const [modelImageUsage, setModelImageUsage] = useState<ReferenceModelUsage | null>(null);
   const [result, setResult] = useState<GeneratedResult | null>(null);
+  const [useOriginalAsIs, setUseOriginalAsIs] = useState(false);
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [desiredTone, setDesiredTone] = useState("");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
@@ -56,7 +57,11 @@ export function PdpMakerClient() {
   const hasDraftContent = Boolean(preparedImage || modelImage || result || additionalInfo.trim() || desiredTone.trim() || activeDraftId);
   const effectiveGeminiApiKey = resolveGeminiApiKeyHeaderValue(clientSettings);
   const hasAvailableGeminiKey = Boolean(effectiveGeminiApiKey);
-  const canAnalyze = Boolean(preparedImage && (!modelImage || modelImageUsage) && hasAvailableGeminiKey);
+  const canAnalyze = Boolean(
+    preparedImage &&
+      (!modelImage || modelImageUsage) &&
+      (useOriginalAsIs || hasAvailableGeminiKey)
+  );
   const apiConnectionLabel = effectiveGeminiApiKey ? "개인 API 키" : "키 필요";
 
   const refreshDrafts = useCallback(async () => {
@@ -335,6 +340,55 @@ export function PdpMakerClient() {
       return;
     }
 
+    // 원본 이미지 그대로 사용 모드: AI 호출 없이 로컬에서 결과 생성
+    if (useOriginalAsIs) {
+      const dataUrl = `data:${preparedImage.mimeType};base64,${preparedImage.base64}`;
+      const manualResult: GeneratedResult = {
+        originalImage: dataUrl,
+        blueprint: {
+          executiveSummary: "원본 이미지를 그대로 사용하는 모드입니다.",
+          scorecard: [],
+          blueprintList: [],
+          sections: [
+            {
+              section_id: "original-hero",
+              section_name: "원본 이미지",
+              goal: "원본 제품 이미지를 그대로 배치",
+              headline: "",
+              headline_en: "",
+              subheadline: "",
+              subheadline_en: "",
+              bullets: [],
+              bullets_en: [],
+              trust_or_objection_line: "",
+              trust_or_objection_line_en: "",
+              CTA: "",
+              CTA_en: "",
+              layout_notes: "",
+              compliance_notes: "",
+              image_id: "original",
+              purpose: "primary",
+              prompt_ko: "",
+              prompt_en: "",
+              negative_prompt: "",
+              style_guide: "",
+              reference_usage: "",
+              generatedImage: dataUrl
+            }
+          ]
+        }
+      };
+      setErrorMessage("");
+      setErrorDetail("");
+      setShowErrorDetail(false);
+      setResult(manualResult);
+      setEditorDraftState(null);
+      setEditorSessionKey((current) => current + 1);
+      setNotice("원본 이미지를 그대로 사용합니다. 텍스트와 도형을 추가해 편집해 주세요.");
+      setAppState("editor");
+      return;
+    }
+
     if (!hasAvailableGeminiKey) {
       setErrorMessage("설정 메뉴에서 본인 Gemini API 키를 먼저 입력해 주세요.");
       return;
@@ -561,6 +615,18 @@ export function PdpMakerClient() {
         ) : (
           <div className={styles.setupGrid}>
             <section className={styles.uploadStage}>
+              <label className={styles.originalToggle}>
+                <input
+                  type="checkbox"
+                  checked={useOriginalAsIs}
+                  onChange={(event) => setUseOriginalAsIs(event.target.checked)}
+                />
+                <span className={styles.originalToggleCopy}>
+                  <strong>원본 이미지 그대로 사용</strong>
+                  <small>체크 시 AI 생성 없이 업로드한 이미지로 바로 편집합니다. Gemini API 키가 없어도 진행 가능합니다.</small>
+                </span>
+              </label>
+
               <div className={styles.panelIntro}>
                 <div className={styles.sectionHeading}>
                   <span className={styles.sectionStep}>1</span>
@@ -824,7 +890,7 @@ export function PdpMakerClient() {
 
               <button className={styles.primaryButtonWide} disabled={!canAnalyze} onClick={handleAnalyze} type="button">
                 <Wand2 size={16} />
-                AI 분석 시작하기
+                {useOriginalAsIs ? "원본 이미지로 바로 편집하기" : "AI 분석 시작하기"}
               </button>
             </aside>
           </div>
