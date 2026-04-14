@@ -75,6 +75,9 @@ export interface PdpAnalyzeRequest {
   additionalInfo?: string;
   desiredTone?: string;
   aspectRatio: AspectRatio;
+  // 원본 이미지를 그대로 사용하는 합성 플로우에서는 첫 섹션 이미지를 Gemini로 생성하지 않는다.
+  // 어차피 클라이언트가 버리고 composeOriginalBanner로 재합성하므로 서버 호출 비용이 불필요하다.
+  skipFirstImage?: boolean;
 }
 
 export interface PdpAnalyzeSuccessResponse {

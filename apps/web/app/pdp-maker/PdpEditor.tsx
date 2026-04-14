@@ -210,6 +210,9 @@ export function PdpEditor({
   const imageContainerRef = useRef<HTMLDivElement>(null);
   const previewStageRef = useRef<HTMLDivElement>(null);
   const resizeSessionRef = useRef<Record<string, { width: number; height: number; fontSize: number }>>({});
+  // @MX:NOTE: 이미지 생성 직후 헤드라인 오버레이를 한 번만 자동 삽입하기 위한 섹션 인덱스 기록.
+  // 사용자가 수동으로 삭제한 뒤 재생성해도 중복 삽입되지 않도록 세션 단위로 기억한다.
+  const autoInsertedHeadlineSectionsRef = useRef<Set<number>>(new Set());
 
   // @MX:NOTE: 카피/레이어 편집 히스토리 관리 (undo/redo). sections, sectionOptions, overlaysBySection,
   // defaultCopyLanguage 4개 슬라이스를 추적하며 500ms 디바운스로 연속 타이핑을 한 엔트리에 묶는다.
@@ -1337,6 +1340,94 @@ export function PdpEditor({
       : `${getModelCountryLabel(currentOptions.modelCountry)} ${getModelAgeLabel(currentOptions.modelAgeRange)} ${getModelGenderLabel(currentOptions.modelGender)}`
     : "모델 없이 제품 중심";
 
+  // @MX:NOTE: 이미지 상단 세이프존에 맞춰 배치될 자동 헤드라인 오버레이를 생성한다.
+  // handleAddTextOverlay(type="headline") 규격과 동일한 폰트/그림자/정렬을 재사용한다.
+  const buildAutoHeadlineOverlay = useCallback(
+    (section: (typeof sections)[number]): TextOverlay | null => {
+      const koHeadline = section.headline?.trim();
+      const enHeadline = section.headline_en?.trim() || koHeadline;
+      if (!koHeadline && !enHeadline) return null;
+
+      const translations = {
+        ko: koHeadline || enHeadline || "",
+        en: enHeadline || koHeadline || ""
+      } as Record<PdpCopyLanguage, string>;
+      const displayText = translations[defaultCopyLanguage] || translations.ko;
+      const fontSize = 42;
+      const fontWeight = "700";
+      const estimatedBox = estimateOverlayBox(displayText, {
+        fontSize,
+        fontWeight,
+        fontFamily: "'Pretendard', sans-serif",
+        lineHeight: 1.2,
+        maxWidth: 360
+      });
+
+      return normalizeTextOverlay({
+        id: crypto.randomUUID(),
+        kind: "text",
+        text: displayText,
+        language: defaultCopyLanguage,
+        translations,
+        x: 52,
+        y: 52,
+        width: estimatedBox.width,
+        height: estimatedBox.height,
+        fontSize,
+        color: "#ffffff",
+        backgroundColor: shapeColorRecommendations[0] ?? "#102532",
+        backgroundEnabled: false,
+        backgroundOpacity: 0.72,
+        backgroundRadius: 18,
+        fontFamily: "'Pretendard', sans-serif",
+        fontWeight,
+        textAlign: "left",
+        lineHeight: 1.2,
+        shadowEnabled: true,
+        shadowColor: colorRecommendations.darkColor,
+        shadowOpacity: 0.42,
+        shadowBlur: 18,
+        shadowOffsetY: 6,
+        source: "auto-headline"
+      });
+    },
+    [colorRecommendations.darkColor, defaultCopyLanguage, shapeColorRecommendations]
+  );
+
+  // @MX:NOTE: 섹션에 기존 레이어가 전혀 없을 때만 헤드라인 오버레이를 자동 삽입한다.
+  // 기존에 수동 레이아웃이 있거나 이미 이번 세션에서 삽입한 섹션은 건너뛴다.
+  const autoInsertHeadlineOverlay = useCallback(
+    (sectionIndex: number, section: (typeof sections)[number]) => {
+      if (autoInsertedHeadlineSectionsRef.current.has(sectionIndex)) return;
+      setOverlaysBySection((current) => {
+        const existing = current[sectionIndex] ?? [];
+        if (existing.length > 0) {
+          autoInsertedHeadlineSectionsRef.current.add(sectionIndex);
+          return current;
+        }
+        const overlay = buildAutoHeadlineOverlay(section);
+        if (!overlay) return current;
+        autoInsertedHeadlineSectionsRef.current.add(sectionIndex);
+        return {
+          ...current,
+          [sectionIndex]: [overlay]
+        };
+      });
+    },
+    [buildAutoHeadlineOverlay]
+  );
+
+  // @MX:NOTE: 초기 마운트 시 이미 생성된 섹션(첫 섹션)에 대해서도 자동 헤드라인 삽입을 시도한다.
+  // 초안 복원 케이스(overlaysBySection가 이미 채워짐)는 autoInsertHeadlineOverlay 내부에서 스킵된다.
+  useEffect(() => {
+    sections.forEach((section, index) => {
+      if (section.generatedImage && section.headline?.trim()) {
+        autoInsertHeadlineOverlay(index, section);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleGenerateImage = async () => {
     setIsGeneratingImage(true);
     setErrorMessage("");
@@ -1378,6 +1469,8 @@ export function PdpEditor({
             : section
         )
       );
+      // @MX:NOTE: 이미지 생성 성공 직후, 해당 섹션에 레이어가 전혀 없을 때만 헤드라인을 자동 배치한다.
+      autoInsertHeadlineOverlay(currentSectionIndex, currentSection);
       setNotice(`${getDisplaySectionName(currentSection)} 이미지를 새 옵션으로 업데이트했습니다.`);
     } catch (error) {
       setIsGeneratingImage(false);
@@ -1436,7 +1529,8 @@ export function PdpEditor({
       shadowColor: colorRecommendations.darkColor,
       shadowOpacity: 0.42,
       shadowBlur: 18,
-      shadowOffsetY: 6
+      shadowOffsetY: 6,
+      source: "manual"
     };
 
     setOverlaysBySection((current) => ({
@@ -2362,7 +2456,8 @@ function normalizeTextOverlay(overlay: Partial<TextOverlay> & Pick<TextOverlay, 
     shadowColor: overlay.shadowColor ?? "#102532",
     shadowOpacity: overlay.shadowOpacity ?? 0.4,
     shadowBlur: overlay.shadowBlur ?? 18,
-    shadowOffsetY: overlay.shadowOffsetY ?? 6
+    shadowOffsetY: overlay.shadowOffsetY ?? 6,
+    source: overlay.source ?? "manual"
   };
 }
 

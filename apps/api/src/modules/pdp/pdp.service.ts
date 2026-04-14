@@ -71,8 +71,12 @@ export class PdpService {
     const mimeType = normalizeMimeType(request.mimeType);
     const referenceModelImage = normalizeReferenceModelImage(request.modelImageBase64, request.modelImageMimeType);
     const client = this.getClient(geminiApiKeyOverride);
+    // @MX:NOTE: skipFirstImage 모드에서는 서버가 이미지 모델을 호출하지 않으므로
+    // reference model profile 추출(이미지 생성 전용)도 생략해 불필요한 Gemini 호출을 제거한다.
     const referenceModelProfile =
-      referenceModelImage ? await this.extractReferenceModelProfile(client, referenceModelImage) : null;
+      !request.skipFirstImage && referenceModelImage
+        ? await this.extractReferenceModelProfile(client, referenceModelImage)
+        : null;
 
     const blueprint = await retryOperation(async () => {
       const response = await client.models.generateContent({
@@ -164,30 +168,35 @@ export class PdpService {
       );
     }
 
-    const firstImage = await this.generateSectionImageInternal({
-      originalImageBase64: normalizedImage,
-      section: firstSection,
-      aspectRatio: request.aspectRatio,
-      desiredTone: request.desiredTone,
-      options: {
-        style: "studio",
-        withModel: true,
-        modelGender: "female",
-        modelAgeRange: "20s",
-        modelCountry: "korea",
-        guidePriorityMode: "guide-first",
-        headline: firstSection.headline,
-        subheadline: firstSection.subheadline,
-        referenceModelImageBase64: referenceModelImage?.base64,
-        referenceModelImageMimeType: referenceModelImage?.mimeType,
-        referenceModelProfile
-      }
-    });
+    // @MX:NOTE: useOriginalAsIs 플로우는 클라이언트가 원본을 직접 배너로 합성하므로
+    // 서버에서 첫 섹션 Gemini 이미지를 만들면 결과가 즉시 버려진다. skipFirstImage 플래그가
+    // true면 이 고비용 호출을 건너뛰어 전체 응답 시간을 5~15초(모델 참조 시 최대 30초) 단축한다.
+    if (!request.skipFirstImage) {
+      const firstImage = await this.generateSectionImageInternal({
+        originalImageBase64: normalizedImage,
+        section: firstSection,
+        aspectRatio: request.aspectRatio,
+        desiredTone: request.desiredTone,
+        options: {
+          style: "studio",
+          withModel: true,
+          modelGender: "female",
+          modelAgeRange: "20s",
+          modelCountry: "korea",
+          guidePriorityMode: "guide-first",
+          headline: firstSection.headline,
+          subheadline: firstSection.subheadline,
+          referenceModelImageBase64: referenceModelImage?.base64,
+          referenceModelImageMimeType: referenceModelImage?.mimeType,
+          referenceModelProfile
+        }
+      });
 
-    blueprint.sections[0] = {
-      ...firstSection,
-      generatedImage: toDataUrl(firstImage.mimeType, firstImage.base64)
-    };
+      blueprint.sections[0] = {
+        ...firstSection,
+        generatedImage: toDataUrl(firstImage.mimeType, firstImage.base64)
+      };
+    }
 
     return {
       originalImage: normalizedImage,
@@ -602,11 +611,15 @@ ${referenceModelPrompt}
 
 # 이미지 생성 공통 규칙
 - 세로형 상세페이지용
-- 이미지 내에 텍스트, 로고, 워터마크, 글자를 넣지 말 것
+- [절대] 이미지 내에 텍스트, 글자, 한글, 영문, 숫자, 타이포그래피, 헤드라인, 캡션, 워터마크, 표지판을 일체 그리지 말 것. 원본 제품 라벨에 물리적으로 존재하는 글자만 예외로 그대로 보존할 것
+- prompt_en, prompt_ko, layout_notes, style_guide, purpose 등 모든 텍스트 필드에 "헤드라인", "headline", "copy", "text overlay", "캡션" 같은 단어를 절대 사용하지 말 것 (이미지 모델이 텍스트를 그리는 원인이 됨)
 - 배경은 단순하게 유지하고 제품/핵심 오브젝트에 시선을 집중시킬 것
 - 한 장에 메시지 하나만 전달할 것
 - 규제 리스크가 있으면 안전한 표현으로 수정할 것
 - JSON 외 텍스트를 붙이지 말고 모든 필드는 간결하게 작성할 것
+- [프레임 가득 채우기] 각 섹션 이미지는 프레임을 가장자리까지 자연스럽게 채울 것. 상·하·좌·우에 인위적인 빈 색상 띠, 빈 박스, 빈 보더, 사용하지 않는 배경 띠를 만들지 말 것. 잡지 표지처럼 피사체와 환경이 프레임을 자연스럽게 채워야 한다
+- prompt_en, layout_notes에 "the image should fill the frame edge-to-edge as a natural full-bleed composition, no empty reserved zones"의 의미가 자연스럽게 녹아들도록 작성할 것
+- negative_prompt에는 반드시 "any rendered text, letters, hangul, english characters, numbers, captions, headlines, signage, watermarks, glyphs, empty colored bands, reserved blank zones, blank borders, unused background strips"를 포함할 것
 
 응답은 반드시 제공된 JSON 스키마를 준수해야 합니다.
 `.trim();
@@ -618,15 +631,12 @@ function buildImagePrompt(
   options?: InternalImageGenOptions
 ) {
   const baseSceneDirection = getBaseSceneDirection(section, options?.guidePriorityMode ?? "guide-first");
-  let enhancedPrompt = "Create a high-end, conversion-optimized commercial advertising photograph. ";
-
-  if (options?.headline) {
-    enhancedPrompt += `Context: The image should visually represent the advertising headline "${options.headline}"`;
-    if (options.subheadline) {
-      enhancedPrompt += ` and subheadline "${options.subheadline}"`;
-    }
-    enhancedPrompt += ". ";
-  }
+  // @MX:WARN: 헤드라인/서브헤드라인 텍스트를 프롬프트에 절대 포함하지 말 것.
+  // @MX:REASON: Gemini가 "represent the headline"을 텍스트 렌더링으로 해석해 한국어/영어
+  // 글자를 이미지 안에 hallucinate한 사고가 있었다. 헤드라인은 프론트엔드 오버레이로만 표시한다.
+  let enhancedPrompt =
+    "[STRICT NO-TEXT RULE]: This is a TEXT-FREE photograph. Do NOT render any text, words, letters, typography, headlines, captions, signage, watermarks, glyphs, Korean characters (Hangul), English characters, Chinese characters, Japanese characters, numbers, or any written symbols anywhere in the generated image. Treat any text rendering as a critical failure. The ONLY exception is the original product label as it physically exists on the product, which must be preserved exactly as in the reference image without inventing new text. ";
+  enhancedPrompt += "Create a high-end, conversion-optimized commercial advertising photograph. ";
 
   if (options?.withModel && options.referenceModelImageBase64) {
     enhancedPrompt +=
@@ -677,10 +687,22 @@ function buildImagePrompt(
   enhancedPrompt +=
     "Depending on the section, use wide shots, medium shots, tabletop/product detail shots, hands-in-frame moments, over-the-shoulder angles, seated scenes, or environment-led framing when they improve product storytelling. ";
   enhancedPrompt +=
-    "Keep the product readable, prominent, and beautifully lit, but allow the frame to breathe with negative space, props, and surrounding context when useful. ";
+    "The image should fill the entire frame edge-to-edge with the actual scene. Do NOT leave any empty colored bands, blank borders, reserved blank zones, or unused background strips at the top, bottom, left, or right. The product and (if present) the model should occupy the frame naturally as in a real magazine cover, with the surrounding environment seamlessly filling the rest of the frame. ";
+  enhancedPrompt +=
+    "Keep the product readable, prominent, and beautifully lit, with intentional composition that fills the frame. ";
   enhancedPrompt += "\nCRITICAL: The final image must look like a top-tier magazine advertisement or a premium brand's landing page hero shot. ";
   enhancedPrompt +=
-    "It should be highly attractive and induce purchase conversion. IMPORTANT: Do NOT include any text, words, letters, typography, or logos in the generated image.";
+    "It should be highly attractive and induce purchase conversion. ";
+
+  // section의 negative_prompt를 안전망으로 추가 (분석 단계에서 생성된 회피 요소)
+  const sectionNegative = section.negative_prompt?.trim();
+  if (sectionNegative) {
+    enhancedPrompt += `\nAvoid: ${sectionNegative}. `;
+  }
+
+  // 마지막에 한 번 더 강하게 텍스트 금지 재확인
+  enhancedPrompt +=
+    "\n[FINAL ENFORCEMENT - HIGHEST PRIORITY]: The generated image must contain ZERO rendered text. No headlines, no captions, no labels (other than the original product label as physically present), no signage, no watermarks, no Hangul, no English letters, no numbers, no glyphs of any language, no decorative typography. If you are tempted to render any character, replace it with empty background or visual props instead. Text rendering is a critical failure.";
 
   return enhancedPrompt;
 }

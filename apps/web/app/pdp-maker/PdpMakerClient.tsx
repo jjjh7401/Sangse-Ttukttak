@@ -409,7 +409,10 @@ export function PdpMakerClient() {
           modelImageFileName: modelImage?.fileName,
           additionalInfo: additionalInfo.trim() || undefined,
           desiredTone: desiredTone.trim() || undefined,
-          aspectRatio
+          aspectRatio,
+          // @MX:NOTE: useOriginalAsIs 모드에서는 서버 첫 섹션 Gemini 이미지 결과가
+          // 클라이언트 합성으로 즉시 교체되므로 skipFirstImage로 서버 호출을 건너뛴다.
+          skipFirstImage: useOriginalAsIs
         })
       }, { geminiApiKey: currentGeminiApiKey });
 

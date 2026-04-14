@@ -27,11 +27,15 @@ interface CanvasLayerBase {
   height: number | string;
 }
 
+export type TextOverlaySource = "manual" | "auto-headline";
+
 export interface TextOverlay extends CanvasLayerBase {
   kind: "text";
   text: string;
   language: PdpCopyLanguage;
   translations: Record<PdpCopyLanguage, string>;
+  // @MX:NOTE: "auto-headline"은 이미지 생성 직후 자동 삽입된 헤드라인 오버레이를 식별하기 위한 태그
+  source?: TextOverlaySource;
   fontSize: number;
   color: string;
   backgroundColor: string;
