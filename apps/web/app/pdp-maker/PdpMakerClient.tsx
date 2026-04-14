@@ -21,6 +21,7 @@ import {
   apiJson,
   composeOriginalBanner,
   detectSimpleBackground,
+  pickBannerLayoutForSection,
   prepareImageFile,
   removeSolidBackground,
   validateGeminiApiKey
@@ -421,12 +422,13 @@ export function PdpMakerClient() {
       let finalResult: GeneratedResult = response.result;
 
       // 원본 이미지 사용 모드: 카피는 Gemini가 생성한 그대로 유지하되
-      // 섹션 이미지는 원본을 선택 비율에 맞춰 합성한 배너로 일괄 덮어쓴다.
+      // 섹션 이미지는 섹션 유형(히어로/베네핏/근거/비교/CTA/상세)에 따라
+      // 다른 레이아웃 프리셋으로 합성한 배너로 개별 생성한다.
       if (useOriginalAsIs) {
         setLoadingStep(
           removeBackground
-            ? "원본 이미지의 단색 배경을 제거하고 배너에 합성하는 중입니다."
-            : "원본 이미지를 선택한 비율에 맞춰 배너로 합성하는 중입니다."
+            ? "원본 이미지의 단색 배경을 제거하고 섹션별 레이아웃으로 합성하는 중입니다."
+            : "원본 이미지를 섹션별 레이아웃에 맞춰 배너로 합성하는 중입니다."
         );
         try {
           let srcBase64 = preparedImage.base64;
@@ -440,24 +442,47 @@ export function PdpMakerClient() {
               console.error("배경 제거 실패, 원본 이미지로 진행합니다.", removeError);
             }
           }
-          const composedBanner = await composeOriginalBanner(
-            srcBase64,
-            srcMime,
-            aspectRatio
+
+          // 섹션별 개별 합성 — 각 섹션의 name/goal로 레이아웃 프리셋 선택
+          const sourceSections = response.result.blueprint.sections;
+          const composedSections = await Promise.all(
+            sourceSections.map(async (section, index) => {
+              const layoutId = pickBannerLayoutForSection(
+                section.section_name,
+                section.goal,
+                index
+              );
+              try {
+                const banner = await composeOriginalBanner(
+                  srcBase64,
+                  srcMime,
+                  aspectRatio,
+                  layoutId
+                );
+                return { ...section, generatedImage: banner };
+              } catch (perSectionError) {
+                console.error(
+                  `섹션 ${index} 합성 실패, 원본 사용:`,
+                  perSectionError
+                );
+                const rawDataUrl = `data:${preparedImage.mimeType};base64,${preparedImage.base64}`;
+                return { ...section, generatedImage: rawDataUrl };
+              }
+            })
           );
+
           finalResult = {
             ...response.result,
-            originalImage: composedBanner,
+            originalImage:
+              composedSections[0]?.generatedImage ??
+              `data:${preparedImage.mimeType};base64,${preparedImage.base64}`,
             blueprint: {
               ...response.result.blueprint,
-              sections: response.result.blueprint.sections.map((section) => ({
-                ...section,
-                generatedImage: composedBanner
-              }))
+              sections: composedSections
             }
           };
         } catch (composeError) {
-          console.error("원본 합성 실패, raw 원본으로 대체합니다.", composeError);
+          console.error("원본 합성 파이프라인 실패, raw 원본으로 대체합니다.", composeError);
           const rawDataUrl = `data:${preparedImage.mimeType};base64,${preparedImage.base64}`;
           finalResult = {
             ...response.result,

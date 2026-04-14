@@ -128,13 +128,166 @@ async function loadImage(src: string) {
   });
 }
 
-// @MX:NOTE: 원본 이미지 사용 모드에서 선택한 비율에 맞춰 배경 여백과 함께 합성 배너 생성.
-// 원본 비율과 타겟 비율이 다르면 지배색 기반 배경을 채우고 원본을 한쪽에 배치하여
-// 반대편 여백이 카피·마케팅 문구가 들어갈 텍스트 존이 된다.
+// @MX:NOTE: 섹션별로 다른 공간 배치를 만들기 위한 레이아웃 프리셋.
+// 각 프리셋은 캔버스 내 이미지가 차지할 영역(imageZone, 정규화된 비율)과
+// 배경 그라디언트 방향, 섹션 유형을 정의한다. 히어로·베네핏·근거 등
+// 섹션 특성에 맞춰 pickLayoutForSection이 자동으로 매칭한다.
+export type BannerLayoutId =
+  | "hero-right"
+  | "benefit-left"
+  | "trust-center-bottom"
+  | "compare-middle"
+  | "cta-left-bold"
+  | "detail-center";
+
+export interface BannerLayoutPreset {
+  id: BannerLayoutId;
+  name: string;
+  description: string;
+  // 정규화된 비율 (0~1)로 표현된 이미지 배치 존
+  imageZone: { x: number; y: number; w: number; h: number };
+  // 그라디언트 방향 (시작·종료)
+  gradientStart: { x: number; y: number };
+  gradientEnd: { x: number; y: number };
+  // 이미지 그림자 오프셋 (이미지와 배경의 경계 소프트)
+  shadowOffset: { x: number; y: number };
+  // 이미지 크기 상한 배율 (zone 대비) — 0.92면 zone의 92%까지만 차지
+  zoneFillRatio: number;
+}
+
+export const BANNER_LAYOUT_PRESETS: BannerLayoutPreset[] = [
+  {
+    id: "hero-right",
+    name: "히어로 · 우측 대형",
+    description: "우측에 제품을 크게, 좌측은 메인 헤드라인 공간",
+    imageZone: { x: 0.46, y: 0.08, w: 0.5, h: 0.84 },
+    gradientStart: { x: 0, y: 0 },
+    gradientEnd: { x: 1, y: 1 },
+    shadowOffset: { x: -14, y: 10 },
+    zoneFillRatio: 0.96
+  },
+  {
+    id: "benefit-left",
+    name: "베네핏 · 좌측 중형",
+    description: "좌측 제품 + 우측 3~4개 베네핏 리스트 공간",
+    imageZone: { x: 0.06, y: 0.12, w: 0.4, h: 0.76 },
+    gradientStart: { x: 1, y: 0 },
+    gradientEnd: { x: 0, y: 1 },
+    shadowOffset: { x: 14, y: 10 },
+    zoneFillRatio: 0.95
+  },
+  {
+    id: "trust-center-bottom",
+    name: "근거 · 중앙 하단",
+    description: "상단 대형 헤드라인 + 하단 중앙 소형 제품",
+    imageZone: { x: 0.32, y: 0.4, w: 0.36, h: 0.55 },
+    gradientStart: { x: 0.5, y: 0 },
+    gradientEnd: { x: 0.5, y: 1 },
+    shadowOffset: { x: 0, y: -14 },
+    zoneFillRatio: 0.9
+  },
+  {
+    id: "compare-middle",
+    name: "비교 · 중앙 배치",
+    description: "중앙 제품 + 좌우 대칭 설명 공간",
+    imageZone: { x: 0.35, y: 0.14, w: 0.3, h: 0.72 },
+    gradientStart: { x: 0, y: 0.5 },
+    gradientEnd: { x: 1, y: 0.5 },
+    shadowOffset: { x: 0, y: 14 },
+    zoneFillRatio: 0.94
+  },
+  {
+    id: "cta-left-bold",
+    name: "CTA · 좌측 크게",
+    description: "좌측 대형 제품 + 우측 CTA 버튼 공간",
+    imageZone: { x: 0.02, y: 0.06, w: 0.5, h: 0.88 },
+    gradientStart: { x: 1, y: 0 },
+    gradientEnd: { x: 0, y: 1 },
+    shadowOffset: { x: 18, y: 12 },
+    zoneFillRatio: 0.97
+  },
+  {
+    id: "detail-center",
+    name: "상세 · 중앙 포커스",
+    description: "중앙 제품 + 상하단 디테일 설명",
+    imageZone: { x: 0.28, y: 0.08, w: 0.44, h: 0.7 },
+    gradientStart: { x: 0.5, y: 0 },
+    gradientEnd: { x: 0.5, y: 1 },
+    shadowOffset: { x: 0, y: 18 },
+    zoneFillRatio: 0.95
+  }
+];
+
+// @MX:NOTE: 섹션 이름/목표/인덱스로 가장 적합한 레이아웃 프리셋 결정.
+// 키워드 매칭이 실패하면 인덱스 기반 로테이션으로 폴백.
+export function pickBannerLayoutForSection(
+  sectionName: string | undefined,
+  sectionGoal: string | undefined,
+  index: number
+): BannerLayoutId {
+  const combined = `${sectionName ?? ""} ${sectionGoal ?? ""}`.toLowerCase();
+
+  if (
+    index === 0 ||
+    combined.includes("히어로") ||
+    combined.includes("hero") ||
+    combined.includes("메인") ||
+    combined.includes("intro")
+  )
+    return "hero-right";
+  if (
+    combined.includes("베네핏") ||
+    combined.includes("혜택") ||
+    combined.includes("benefit") ||
+    combined.includes("효능")
+  )
+    return "benefit-left";
+  if (
+    combined.includes("근거") ||
+    combined.includes("신뢰") ||
+    combined.includes("후기") ||
+    combined.includes("증거") ||
+    combined.includes("trust") ||
+    combined.includes("proof")
+  )
+    return "trust-center-bottom";
+  if (
+    combined.includes("비교") ||
+    combined.includes("차이") ||
+    combined.includes("compare")
+  )
+    return "compare-middle";
+  if (
+    combined.includes("cta") ||
+    combined.includes("구매") ||
+    combined.includes("행동") ||
+    combined.includes("주문") ||
+    combined.includes("결제")
+  )
+    return "cta-left-bold";
+  if (combined.includes("상세") || combined.includes("detail") || combined.includes("스펙"))
+    return "detail-center";
+
+  // 폴백: 인덱스 기반 로테이션
+  const fallback: BannerLayoutId[] = [
+    "hero-right",
+    "benefit-left",
+    "trust-center-bottom",
+    "compare-middle",
+    "cta-left-bold",
+    "detail-center"
+  ];
+  return fallback[index % fallback.length];
+}
+
+// @MX:NOTE: 원본 이미지 사용 모드에서 선택한 비율 + 섹션별 레이아웃에 맞춰 합성 배너 생성.
+// 캔버스 크기를 1600px long side로 고정하여 이미지가 적정 공간을 차지하도록 하며,
+// 섹션별 zone에 이미지를 fit-contain 방식으로 배치해 공간이 비지 않도록 한다.
 export async function composeOriginalBanner(
   sourceBase64: string,
   mimeType: string,
-  targetRatio: import("@runacademy/shared").AspectRatio
+  targetRatio: import("@runacademy/shared").AspectRatio,
+  layoutId: BannerLayoutId = "hero-right"
 ): Promise<string> {
   const dataUrl = toDataUrl(mimeType, sourceBase64);
   const image = await loadImage(dataUrl);
@@ -147,27 +300,25 @@ export async function composeOriginalBanner(
   const [rw, rh] = parseAspectRatio(targetRatio);
   const tgtRatio = rw / rh;
 
-  // 동일 비율(오차 < 2%)이면 원본 그대로 반환
-  if (Math.abs(srcRatio - tgtRatio) / tgtRatio < 0.02) {
-    return dataUrl;
-  }
+  const preset =
+    BANNER_LAYOUT_PRESETS.find((item) => item.id === layoutId) ??
+    BANNER_LAYOUT_PRESETS[0];
 
-  // 원본이 전부 들어가도록 캔버스 크기 결정
+  // 캔버스 크기: long side 1600px 고정 (공간 확보)
+  const LONG_SIDE = 1600;
   let canvasW: number;
   let canvasH: number;
-  if (tgtRatio > srcRatio) {
-    // 타겟이 더 가로형 → 높이를 원본 기준으로 고정, 너비는 비율대로 확장
-    canvasH = srcH;
-    canvasW = Math.round(srcH * tgtRatio);
+  if (tgtRatio >= 1) {
+    canvasW = LONG_SIDE;
+    canvasH = Math.round(LONG_SIDE / tgtRatio);
   } else {
-    // 타겟이 더 세로형 → 너비를 원본 기준으로 고정, 높이는 비율대로 확장
-    canvasW = srcW;
-    canvasH = Math.round(srcW / tgtRatio);
+    canvasH = LONG_SIDE;
+    canvasW = Math.round(LONG_SIDE * tgtRatio);
   }
 
-  // 지배색 추출 (샘플링 + 평균 + 라이튼)
+  // 지배색 기반 배경 그라디언트
   const bgColor = extractDominantColor(image);
-  const bgLight = lightenHex(bgColor, 0.2);
+  const bgLight = lightenHex(bgColor, 0.22);
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasW;
@@ -175,35 +326,49 @@ export async function composeOriginalBanner(
   const ctx = canvas.getContext("2d");
   if (!ctx) return dataUrl;
 
-  // 배경: 은은한 선형 그라디언트 (텍스트 가독성 + 자연스러운 전환)
-  const gradient = ctx.createLinearGradient(0, 0, canvasW, canvasH);
+  // 프리셋별 방향성을 가진 그라디언트
+  const gradient = ctx.createLinearGradient(
+    preset.gradientStart.x * canvasW,
+    preset.gradientStart.y * canvasH,
+    preset.gradientEnd.x * canvasW,
+    preset.gradientEnd.y * canvasH
+  );
   gradient.addColorStop(0, bgLight);
   gradient.addColorStop(1, bgColor);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // 원본 이미지 배치 결정
-  //  - 가로 타겟 + 세로 원본: 원본을 우측에, 좌측은 텍스트 존
-  //  - 세로 타겟 + 가로 원본: 원본을 상단에, 하단은 텍스트 존
-  let dx: number;
-  let dy: number;
-  if (tgtRatio > srcRatio) {
-    // 가로형 캔버스 → 원본 우측 정렬, 좌측 빈 공간 = 텍스트 존
-    dx = canvasW - srcW;
-    dy = Math.round((canvasH - srcH) / 2);
+  // 프리셋의 imageZone을 절대 픽셀로 환산
+  const zoneX = preset.imageZone.x * canvasW;
+  const zoneY = preset.imageZone.y * canvasH;
+  const zoneW = preset.imageZone.w * canvasW;
+  const zoneH = preset.imageZone.h * canvasH;
+
+  // 이미지를 zone 내부에 contain fit 방식으로 스케일
+  const zoneRatio = zoneW / zoneH;
+  let drawW: number;
+  let drawH: number;
+  if (srcRatio > zoneRatio) {
+    // 원본이 더 가로형 → 존 너비 기준
+    drawW = zoneW * preset.zoneFillRatio;
+    drawH = drawW / srcRatio;
   } else {
-    // 세로형 캔버스 → 원본 상단 정렬, 하단 빈 공간 = 텍스트 존
-    dx = Math.round((canvasW - srcW) / 2);
-    dy = 0;
+    // 원본이 더 세로형 → 존 높이 기준
+    drawH = zoneH * preset.zoneFillRatio;
+    drawW = drawH * srcRatio;
   }
 
-  // 원본과 배경 사이 자연스러운 페이드를 위해 살짝의 soft shadow
+  // Zone 중앙에 이미지 배치
+  const dx = zoneX + (zoneW - drawW) / 2;
+  const dy = zoneY + (zoneH - drawH) / 2;
+
+  // 이미지와 배경 경계에 soft shadow로 자연스러운 융합
   ctx.save();
-  ctx.shadowColor = "rgba(0, 0, 0, 0.18)";
-  ctx.shadowBlur = 32;
-  ctx.shadowOffsetX = tgtRatio > srcRatio ? -12 : 0;
-  ctx.shadowOffsetY = tgtRatio > srcRatio ? 0 : 14;
-  ctx.drawImage(image, dx, dy, srcW, srcH);
+  ctx.shadowColor = "rgba(0, 0, 0, 0.22)";
+  ctx.shadowBlur = 48;
+  ctx.shadowOffsetX = preset.shadowOffset.x;
+  ctx.shadowOffsetY = preset.shadowOffset.y;
+  ctx.drawImage(image, dx, dy, drawW, drawH);
   ctx.restore();
 
   return canvas.toDataURL("image/jpeg", 0.92);
