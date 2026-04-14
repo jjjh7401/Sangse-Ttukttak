@@ -15,7 +15,14 @@ import {
   savePdpClientSettings,
   type PdpClientSettings
 } from "./pdp-settings";
-import { RATIO_OPTIONS, TONE_OPTIONS, apiJson, prepareImageFile, validateGeminiApiKey } from "./pdp-utils";
+import {
+  RATIO_OPTIONS,
+  TONE_OPTIONS,
+  apiJson,
+  composeOriginalBanner,
+  prepareImageFile,
+  validateGeminiApiKey
+} from "./pdp-utils";
 
 type PreparedImage = PreparedImageDraft;
 
@@ -57,11 +64,7 @@ export function PdpMakerClient() {
   const hasDraftContent = Boolean(preparedImage || modelImage || result || additionalInfo.trim() || desiredTone.trim() || activeDraftId);
   const effectiveGeminiApiKey = resolveGeminiApiKeyHeaderValue(clientSettings);
   const hasAvailableGeminiKey = Boolean(effectiveGeminiApiKey);
-  const canAnalyze = Boolean(
-    preparedImage &&
-      (!modelImage || modelImageUsage) &&
-      (useOriginalAsIs || hasAvailableGeminiKey)
-  );
+  const canAnalyze = Boolean(preparedImage && (!modelImage || modelImageUsage) && hasAvailableGeminiKey);
   const apiConnectionLabel = effectiveGeminiApiKey ? "개인 API 키" : "키 필요";
 
   const refreshDrafts = useCallback(async () => {
@@ -340,55 +343,6 @@ export function PdpMakerClient() {
       return;
     }
 
-    // 원본 이미지 그대로 사용 모드: AI 호출 없이 로컬에서 결과 생성
-    if (useOriginalAsIs) {
-      const dataUrl = `data:${preparedImage.mimeType};base64,${preparedImage.base64}`;
-      const manualResult: GeneratedResult = {
-        originalImage: dataUrl,
-        blueprint: {
-          executiveSummary: "원본 이미지를 그대로 사용하는 모드입니다.",
-          scorecard: [],
-          blueprintList: [],
-          sections: [
-            {
-              section_id: "original-hero",
-              section_name: "원본 이미지",
-              goal: "원본 제품 이미지를 그대로 배치",
-              headline: "",
-              headline_en: "",
-              subheadline: "",
-              subheadline_en: "",
-              bullets: [],
-              bullets_en: [],
-              trust_or_objection_line: "",
-              trust_or_objection_line_en: "",
-              CTA: "",
-              CTA_en: "",
-              layout_notes: "",
-              compliance_notes: "",
-              image_id: "original",
-              purpose: "primary",
-              prompt_ko: "",
-              prompt_en: "",
-              negative_prompt: "",
-              style_guide: "",
-              reference_usage: "",
-              generatedImage: dataUrl
-            }
-          ]
-        }
-      };
-      setErrorMessage("");
-      setErrorDetail("");
-      setShowErrorDetail(false);
-      setResult(manualResult);
-      setEditorDraftState(null);
-      setEditorSessionKey((current) => current + 1);
-      setNotice("원본 이미지를 그대로 사용합니다. 텍스트와 도형을 추가해 편집해 주세요.");
-      setAppState("editor");
-      return;
-    }
-
     if (!hasAvailableGeminiKey) {
       setErrorMessage("설정 메뉴에서 본인 Gemini API 키를 먼저 입력해 주세요.");
       return;
@@ -445,10 +399,54 @@ export function PdpMakerClient() {
         return;
       }
 
-      setResult(response.result);
+      let finalResult: GeneratedResult = response.result;
+
+      // 원본 이미지 사용 모드: 카피는 Gemini가 생성한 그대로 유지하되
+      // 섹션 이미지는 원본을 선택 비율에 맞춰 합성한 배너로 일괄 덮어쓴다.
+      if (useOriginalAsIs) {
+        setLoadingStep("원본 이미지를 선택한 비율에 맞춰 배너로 합성하는 중입니다.");
+        try {
+          const composedBanner = await composeOriginalBanner(
+            preparedImage.base64,
+            preparedImage.mimeType,
+            aspectRatio
+          );
+          finalResult = {
+            ...response.result,
+            originalImage: composedBanner,
+            blueprint: {
+              ...response.result.blueprint,
+              sections: response.result.blueprint.sections.map((section) => ({
+                ...section,
+                generatedImage: composedBanner
+              }))
+            }
+          };
+        } catch (composeError) {
+          console.error("원본 합성 실패, raw 원본으로 대체합니다.", composeError);
+          const rawDataUrl = `data:${preparedImage.mimeType};base64,${preparedImage.base64}`;
+          finalResult = {
+            ...response.result,
+            originalImage: rawDataUrl,
+            blueprint: {
+              ...response.result.blueprint,
+              sections: response.result.blueprint.sections.map((section) => ({
+                ...section,
+                generatedImage: rawDataUrl
+              }))
+            }
+          };
+        }
+      }
+
+      setResult(finalResult);
       setEditorDraftState(null);
       setEditorSessionKey((current) => current + 1);
-      setNotice("분석이 완료되었습니다. 섹션별 이미지를 재생성하거나 텍스트를 직접 배치해 보세요.");
+      setNotice(
+        useOriginalAsIs
+          ? "원본 이미지로 배너를 합성했습니다. AI가 제안한 카피를 참고해 여백에 텍스트를 배치해 주세요."
+          : "분석이 완료되었습니다. 섹션별 이미지를 재생성하거나 텍스트를 직접 배치해 보세요."
+      );
       setAppState("editor");
     } catch (error) {
       setAppState("upload");
@@ -623,7 +621,7 @@ export function PdpMakerClient() {
                 />
                 <span className={styles.originalToggleCopy}>
                   <strong>원본 이미지 그대로 사용</strong>
-                  <small>체크 시 AI 생성 없이 업로드한 이미지로 바로 편집합니다. Gemini API 키가 없어도 진행 가능합니다.</small>
+                  <small>체크 시 이미지는 AI로 재생성하지 않고 원본을 사용합니다. 카피 문구는 AI가 생성 설정(톤·추가 정보)을 반영해 제안하며, 선택한 비율에 맞춰 배경 여백을 자동 합성해 텍스트를 배치할 공간을 확보합니다.</small>
                 </span>
               </label>
 
@@ -890,7 +888,7 @@ export function PdpMakerClient() {
 
               <button className={styles.primaryButtonWide} disabled={!canAnalyze} onClick={handleAnalyze} type="button">
                 <Wand2 size={16} />
-                {useOriginalAsIs ? "원본 이미지로 바로 편집하기" : "AI 분석 시작하기"}
+                {useOriginalAsIs ? "원본으로 합성 + 카피 제안 시작" : "AI 분석 시작하기"}
               </button>
             </aside>
           </div>
